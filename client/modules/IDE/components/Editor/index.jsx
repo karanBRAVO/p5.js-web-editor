@@ -50,6 +50,7 @@ import { metaKey } from '../../../../utils/metaKey';
 import '../show-hint';
 import * as hinter from '../../../../utils/p5-hinter';
 import '../../../../utils/codemirror-search';
+import { P5_CLASS_ITEMS } from './data';
 
 import beepUrl from '../../../../sounds/audioAlert.mp3';
 import RightArrowIcon from '../../../../images/right-arrow.svg';
@@ -88,6 +89,9 @@ class Editor extends React.Component {
       currentLine: 1
     };
     this._cm = null;
+    this.frameContainer = null;
+    this.docContainer = null;
+    this.contextMenuContainer = null;
     this.tidyCode = this.tidyCode.bind(this);
 
     this.updateLintingMessageAccessibility = debounce((annotations) => {
@@ -104,6 +108,9 @@ class Editor extends React.Component {
     this.showFind = this.showFind.bind(this);
     this.showReplace = this.showReplace.bind(this);
     this.getContent = this.getContent.bind(this);
+    this.showColorPicker = this.showColorPicker.bind(this);
+    this.renderReferenceFrame = this.renderReferenceFrame.bind(this);
+    this.renderDoc = this.renderDoc.bind(this);
   }
 
   componentDidMount() {
@@ -179,9 +186,26 @@ class Editor extends React.Component {
       // Cassie Tarakajian: If you don't set a default color, then when you
       // choose a color, it deletes characters inline. This is a
       // hack to prevent that.
-      [`${metaKey}-K`]: (cm, event) =>
-        cm.state.colorpicker.popup_color_picker({ length: 0 }),
-      [`${metaKey}-.`]: 'toggleComment' // Note: most adblockers use the shortcut ctrl+.
+      [`${metaKey}-K`]: (cm, e) => this.showColorPicker(cm),
+      [`${metaKey}-.`]: 'toggleComment', // Note: most adblockers use the shortcut ctrl+.
+      [`${metaKey}-]`]: (cm, e) => {
+        const cursor = cm.getCursor();
+        const token = cm.getTokenAt(cursor);
+
+        if (token) {
+          const hints = this.hinter
+            .search(token.string)
+            .filter((h) => h.item.text === token.string);
+
+          if (hints && hints.length === 1) {
+            const { p5, text } = hints[0].item;
+            if (p5) {
+              const url = `https://p5js.org/reference/p5/${text}`;
+              this.renderReferenceFrame(url);
+            }
+          }
+        }
+      }
     });
 
     this.initializeDocuments(this.props.files);
@@ -210,6 +234,130 @@ class Editor extends React.Component {
       if (/^[a-z]$/i.test(e.key) && (mode === 'css' || mode === 'javascript')) {
         this.showHint(_cm);
       }
+    });
+
+    const debouncedMouseMove = debounce((event) => {
+      const cm = this._cm;
+
+      const pos = cm.coordsChar({ left: event.clientX, top: event.clientY });
+      const token = cm.getTokenAt(pos);
+
+      if (token && token.string) {
+        const doc = P5_CLASS_ITEMS.find((item) => item.name === token.string);
+
+        if (doc) {
+          const coords = cm.charCoords(pos, 'page');
+          this.renderDoc(doc, coords);
+        }
+      }
+    }, 200);
+
+    this._cm
+      .getWrapperElement()
+      .addEventListener('mousemove', debouncedMouseMove);
+
+    this._cm.getWrapperElement().addEventListener('mouseleave', () => {
+      if (this.docContainer) {
+        document.body.removeChild(this.docContainer);
+        this.docContainer = null;
+      }
+    });
+
+    this._cm.on('contextmenu', (cm, event) => {
+      event.preventDefault();
+
+      const menuItems = [
+        {
+          name: 'Format',
+          shortcut: 'Ctrl+Shift+F',
+          action: () => {
+            this.tidyCode();
+          }
+        },
+        {
+          name: 'Find',
+          shortcut: 'Ctrl+f',
+          action: () => {
+            this.showFind();
+          }
+        },
+        {
+          name: 'Replace',
+          shortcut: 'Ctrl+h',
+          action: () => {
+            this.showReplace();
+          }
+        },
+        {
+          name: 'Color Picker',
+          shortcut: 'Ctrl+k',
+          action: () => {
+            this.showColorPicker(cm);
+          }
+        },
+        {
+          name: 'Cut',
+          shortcut: 'Ctrl+x',
+          action: async () => {
+            const selectedText = cm.getSelection();
+            if (!selectedText) return;
+
+            try {
+              await navigator.clipboard.writeText(selectedText);
+              cm.replaceSelection('');
+            } catch (err) {
+              console.error('Failed to cut text:', err);
+            }
+          }
+        },
+        {
+          name: 'Copy',
+          shortcut: 'Ctrl+c',
+          action: async () => {
+            const selectedText = cm.getSelection();
+            if (!selectedText) return;
+
+            try {
+              await navigator.clipboard.writeText(selectedText);
+            } catch (err) {
+              console.error('Failed to copy text:', err);
+            }
+          }
+        },
+        {
+          name: 'Paste',
+          shortcut: 'Ctrl+p',
+          action: async () => {
+            try {
+              const clipboardText = await navigator.clipboard.readText();
+              if (clipboardText) {
+                cm.replaceSelection(clipboardText);
+              }
+            } catch (err) {
+              console.error('Failed to paste text:', err);
+            }
+          }
+        },
+        {
+          name: 'Undo',
+          shortcut: 'Ctrl+z',
+          action: () => {
+            this._cm.undo();
+          }
+        },
+        {
+          name: 'Redo',
+          shortcut: 'Ctrl+Shift+Z',
+          action: () => {
+            this._cm.redo();
+          }
+        }
+      ];
+
+      this.renderContextMenu(menuItems, {
+        left: event.clientX,
+        top: event.clientY
+      });
     });
 
     this._cm.getWrapperElement().style[
@@ -447,6 +595,10 @@ class Editor extends React.Component {
       CodeMirror.showHint(
         _cm,
         () => {
+          const text = _cm.getValue();
+
+          const words = [...new Set(text.match(/\b\w+\b/g) || [])];
+
           const c = _cm.getCursor();
           const token = _cm.getTokenAt(c);
 
@@ -454,8 +606,25 @@ class Editor extends React.Component {
             .search(token.string)
             .filter((h) => h.item.text[0] === token.string[0]);
 
+          const hintWords = new Set(hints.map((h) => h.item.text));
+
+          const editorSuggestions = words
+            .filter((word) => word.startsWith(token.string))
+            .filter((word) => !hintWords.has(word))
+            .map((word, index) => ({
+              item: {
+                text: word,
+                type: 'abc',
+                params: [],
+                p5: false
+              },
+              refIndex: index
+            }));
+
+          const combinedSuggestions = [...hints, ...editorSuggestions];
+
           return {
-            list: hints,
+            list: combinedSuggestions,
             from: CodeMirror.Pos(c.line, token.start),
             to: CodeMirror.Pos(c.line, c.ch)
           };
@@ -492,6 +661,10 @@ class Editor extends React.Component {
     }
   }
 
+  showColorPicker(cm) {
+    return cm.state.colorpicker.popup_color_picker({ length: 0 });
+  }
+
   tidyCode() {
     const mode = this._cm.getOption('mode');
     if (mode === 'javascript') {
@@ -513,6 +686,183 @@ class Editor extends React.Component {
         ); // eslint-disable-line
       }
     });
+  }
+
+  renderContextMenu(items, coords) {
+    if (this.contextMenuContainer !== null) {
+      document.body.removeChild(this.contextMenuContainer);
+      this.contextMenuContainer = null;
+    }
+
+    this.contextMenuContainer = document.createElement('div');
+    this.contextMenuContainer.style.position = 'absolute';
+    this.contextMenuContainer.style.zIndex = '1000';
+    this.contextMenuContainer.style.background = '#fff';
+    this.contextMenuContainer.style.border = '1px solid #ddd';
+    this.contextMenuContainer.style.width = '220px';
+    this.contextMenuContainer.style.overflow = 'hidden';
+    this.contextMenuContainer.style.padding = '4px 0';
+    this.contextMenuContainer.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.2)';
+    this.contextMenuContainer.style.borderRadius = '6px';
+
+    let { left, top } = coords;
+
+    const docWidth = document.documentElement.clientWidth;
+    const docHeight = document.documentElement.clientHeight;
+    const menuWidth = 220;
+    const menuHeight = items.length * 40;
+
+    if (left + menuWidth > docWidth) left = docWidth - menuWidth - 10;
+    if (top + menuHeight > docHeight) top = docHeight - menuHeight - 10;
+
+    this.contextMenuContainer.style.left = `${left}px`;
+    this.contextMenuContainer.style.top = `${top}px`;
+
+    items.forEach((item) => {
+      const menuItem = document.createElement('div');
+      menuItem.style.display = 'flex';
+      menuItem.style.justifyContent = 'space-between';
+      menuItem.style.alignItems = 'center';
+      menuItem.style.padding = '8px 12px';
+      menuItem.style.cursor = 'pointer';
+      menuItem.style.fontSize = '14px';
+      menuItem.style.fontFamily = 'Arial, sans-serif';
+      menuItem.style.borderRadius = '4px';
+      menuItem.style.transition = 'background 0.2s';
+
+      menuItem.addEventListener('mouseenter', () => {
+        menuItem.style.background = '#f5f5f5';
+      });
+      menuItem.addEventListener('mouseleave', () => {
+        menuItem.style.background = 'transparent';
+      });
+      menuItem.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (item.action) {
+          item.action();
+        }
+        if (this.contextMenuContainer !== null) {
+          document.body.removeChild(this.contextMenuContainer);
+          this.contextMenuContainer = null;
+        }
+      });
+
+      const name = document.createElement('span');
+      name.textContent = item.name;
+      name.style.flex = '1';
+
+      const shortcut = document.createElement('span');
+      shortcut.textContent = item.shortcut;
+      shortcut.style.color = '#888';
+      shortcut.style.fontSize = '12px';
+
+      menuItem.appendChild(name);
+      menuItem.appendChild(shortcut);
+
+      this.contextMenuContainer.appendChild(menuItem);
+    });
+
+    document.body.appendChild(this.contextMenuContainer);
+
+    const closeMenu = (e) => {
+      if (
+        this.contextMenuContainer !== null &&
+        !this.contextMenuContainer.contains(e.target)
+      ) {
+        document.body.removeChild(this.contextMenuContainer);
+        this.contextMenuContainer = null;
+        document.removeEventListener('click', closeMenu);
+      }
+    };
+    document.addEventListener('click', closeMenu);
+  }
+
+  renderDoc(data, coords) {
+    if (this.docContainer !== null) {
+      document.body.removeChild(this.docContainer);
+      this.docContainer = null;
+    }
+
+    this.docContainer = document.createElement('div');
+    this.docContainer.style.position = 'fixed';
+    this.docContainer.style.zIndex = 25;
+    this.docContainer.style.background = '#fff';
+    this.docContainer.style.border = '1px solid #dddddd';
+    this.docContainer.style.width = '400px';
+    this.docContainer.style.maxHeight = '300px';
+    this.docContainer.style.overflow = 'auto';
+    this.docContainer.style.padding = '5px';
+
+    let left = coords.left + 10;
+    let top = coords.top + 20;
+
+    const docWidth = document.documentElement.clientWidth;
+    const docHeight = document.documentElement.clientHeight;
+    const tooltipWidth = 300;
+    const tooltipHeight = 100;
+
+    if (left + tooltipWidth > docWidth) left = docWidth - tooltipWidth - 10;
+    if (top + tooltipHeight > docHeight) top = docHeight - tooltipHeight - 10;
+
+    this.docContainer.style.left = `${left}px`;
+    this.docContainer.style.top = `${top}px`;
+
+    const heading = document.createElement('h1');
+    heading.innerHTML = `<span>(${data.itemtype})</span> ${data.name}`;
+    heading.style.display = 'flex';
+    heading.style.flexDirection = 'row';
+    heading.style.alignItems = 'center';
+    heading.style.gap = '5px';
+
+    const description = document.createElement('p');
+    description.innerHTML = data.description;
+
+    this.docContainer.appendChild(heading);
+    this.docContainer.appendChild(description);
+    document.body.appendChild(this.docContainer);
+  }
+
+  renderReferenceFrame(url) {
+    if (this.frameContainer !== null) {
+      document.body.removeChild(this.frameContainer);
+      this.frameContainer = null;
+    }
+
+    this.frameContainer = document.createElement('div');
+    this.frameContainer.style.position = 'fixed';
+    this.frameContainer.style.zIndex = 20;
+    this.frameContainer.style.top = 0;
+    this.frameContainer.style.right = 0;
+    this.frameContainer.style.bottom = 0;
+    this.frameContainer.style.border = '1px solid #ccc';
+    this.frameContainer.style.background = '#fff';
+
+    const closeButton = document.createElement('button');
+    closeButton.innerText = 'close';
+    closeButton.style.width = '100%';
+    closeButton.style.color = 'white';
+    closeButton.style.background = '#000';
+    closeButton.style.padding = '3px 6px';
+    closeButton.addEventListener('click', () => {
+      if (this.frameContainer !== null) {
+        document.body.removeChild(this.frameContainer);
+        this.frameContainer = null;
+      }
+    });
+
+    const docFrame = document.createElement('iframe');
+    docFrame.style.background = '#fff';
+    docFrame.style.border = '1px solid #fff';
+    docFrame.style.width = '400px';
+    docFrame.style.height = '100%';
+    docFrame.style.display = 'block';
+
+    docFrame.src = url;
+
+    this.frameContainer.appendChild(closeButton);
+    this.frameContainer.appendChild(docFrame);
+    document.body.appendChild(this.frameContainer);
   }
 
   render() {
