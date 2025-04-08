@@ -205,6 +205,54 @@ class Editor extends React.Component {
             }
           }
         }
+      },
+      [`${metaKey}-0`]: (cm) => {
+        const doc = cm.getDoc();
+        const cursor = doc.getCursor();
+        const { line } = cursor;
+        const lineContent = doc.getLine(line);
+
+        if (line === 0) return;
+
+        const targetLine = line - 1;
+        const targetContent = doc.getLine(targetLine);
+
+        doc.replaceRange(
+          `${targetContent}\n`,
+          { line, ch: 0 },
+          { line: line + 1, ch: 0 }
+        );
+        doc.replaceRange(
+          `${lineContent}\n`,
+          { line: targetLine, ch: 0 },
+          { line: targetLine + 1, ch: 0 }
+        );
+
+        doc.setCursor({ line: targetLine, ch: cursor.ch });
+      },
+      [`${metaKey}-9`]: (cm) => {
+        const doc = cm.getDoc();
+        const cursor = doc.getCursor();
+        const { line } = cursor;
+        const lineContent = doc.getLine(line);
+
+        if (line === doc.lineCount() - 1) return;
+
+        const targetLine = line + 1;
+        const targetContent = doc.getLine(targetLine);
+
+        doc.replaceRange(
+          `${targetContent}\n`,
+          { line, ch: 0 },
+          { line: line + 1, ch: 0 }
+        );
+        doc.replaceRange(
+          `${lineContent}\n`,
+          { line: targetLine, ch: 0 },
+          { line: targetLine + 1, ch: 0 }
+        );
+
+        doc.setCursor({ line: targetLine, ch: cursor.ch });
       }
     });
 
